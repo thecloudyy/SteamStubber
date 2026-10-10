@@ -26,6 +26,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             HookFilterBox();
             await LoadLibraryAsync();
+#if !DEBUG
+            _ = CheckForUpdatesAsync();
+#endif
         };
         Closed += (_, _) =>
         {
@@ -271,6 +274,49 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _cts = null;
             SetRunning(false);
         }
+    }
+
+    // ── Self-update (Release builds only) ──
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            var ct = cts.Token;
+            string? remote = await UpdateService.GetRemoteHashAsync(ct);
+            string? local = UpdateService.GetLocalHash();
+            if (remote is null || local is null) return;
+            if (remote.Equals(local, StringComparison.OrdinalIgnoreCase)) return;
+
+            bool yes = await Dispatcher.InvokeAsync(() =>
+                MessageBox.Show(this,
+                    "A new version of Steam Stubber is available. Download it and restart now?",
+                    "Update available",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes);
+            if (!yes) return;
+
+            string tmp = Path.Combine(Path.GetTempPath(), "SteamStubber.update.exe");
+            try
+            {
+                var prog = new Progress<double>(p => Status($"Downloading update… {p:F0}%"));
+                await UpdateService.DownloadAsync(tmp, prog, ct);
+                if (!UpdateService.VerifyHash(tmp, remote))
+                {
+                    Status("Update failed verification, cancelled.");
+                    try { File.Delete(tmp); } catch { }
+                    return;
+                }
+                Status("Update verified, restarting…");
+                UpdateService.ApplyUpdateAndRestart(tmp);
+            }
+            catch (Exception ex)
+            {
+                Status($"Update failed: {ex.Message}");
+                try { File.Delete(tmp); } catch { }
+            }
+        }
+        catch { }
     }
 
     // ── Helpers ──
